@@ -16,6 +16,7 @@ import (
 
 	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -43,7 +44,7 @@ func GetChecksum(data []byte) string {
 
 func CompressData(data []byte) (io.ReadSeeker, error) {
 	var b bytes.Buffer
-	w := gzip.NewWriter(&b)
+	w := zstd.NewWriter(&b)
 	if _, err := w.Write(data); err != nil {
 		w.Close()
 		return nil, err
