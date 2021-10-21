@@ -240,7 +240,11 @@ func CreateDeltaBlockBackup(config *DeltaBackupConfig) (string, bool, error) {
 // performBackup if lastBackup is present we will do an incremental backup
 func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Backup, lastBackup *Backup,
 	bsDriver BackupStoreDriver) (int, string, error) {
+	var totalTime, checksumTime, compressTime, writeTime int64
+	var startTotal, endTotal time.Time
+	var start, end time.Time
 
+	startTotal = time.Now()
 	// create an in progress backup config file
 	if err := saveBackup(&Backup{Name: deltaBackup.Name, VolumeName: deltaBackup.VolumeName,
 		CreatedTime: ""}, bsDriver); err != nil {
@@ -269,7 +273,12 @@ func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Back
 			if err != nil {
 				return progress, "", err
 			}
+
+			start = time.Now()
 			checksum := util.GetChecksum(block)
+			end = time.Now()
+			checksumTime += end.Sub(start).Milliseconds()
+
 			blkFile := getBlockFilePath(volume.Name, checksum)
 			if bsDriver.FileExists(blkFile) {
 				blockMapping := BlockMapping{
@@ -281,14 +290,21 @@ func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Back
 				continue
 			}
 
+			start = time.Now()
 			rs, err := util.CompressData(block)
+			end = time.Now()
+			compressTime += end.Sub(start).Milliseconds()
 			if err != nil {
 				return progress, "", err
 			}
 
+			start = time.Now()
 			if err := bsDriver.Write(blkFile, rs); err != nil {
 				return progress, "", err
 			}
+			end = time.Now()
+			writeTime += end.Sub(start).Milliseconds()
+
 			log.Debugf("Created new block file at %v", blkFile)
 
 			newBlocks++
@@ -338,6 +354,12 @@ func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Back
 	if err := saveVolume(volume, bsDriver); err != nil {
 		return progress, "", err
 	}
+
+	endTotal = time.Now()
+	totalTime = endTotal.Sub(startTotal).Milliseconds()
+
+	log.Infof("perf (unit: ms): total=%v , checksum=%v , compres=%v , write=%v",
+		totalTime, checksumTime, compressTime, writeTime)
 
 	return PROGRESS_PERCENTAGE_BACKUP_TOTAL, EncodeBackupURL(backup.Name, volume.Name, destURL), nil
 }
