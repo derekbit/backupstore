@@ -44,7 +44,7 @@ func GetChecksum(data []byte) string {
 
 func CompressData(data []byte) (io.ReadSeeker, error) {
 	var b bytes.Buffer
-	w := zstd.NewWriter(&b)
+	w, _ := zstd.NewWriter(&b)
 	if _, err := w.Write(data); err != nil {
 		w.Close()
 		return nil, err
