@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	. "gopkg.in/check.v1"
+
+	"github.com/longhorn/backupstore/util/compression"
 )
 
 func Test(t *testing.T) { TestingT(t) }
@@ -56,15 +58,55 @@ func (s *TestSuite) TearDownSuite(c *C) {
 	c.Assert(err, IsNil)
 }
 
-func (s *TestSuite) TestCompress(c *C) {
+func (s *TestSuite) TestGzipCompress(c *C) {
 	var err error
 	data := []byte("Some random string")
 	checksum := GetChecksum(data)
 
-	compressed, err := CompressData(data)
+	compressor := compression.Compressors["gzip"]
+	compressed, err := compressor.CompressData(data)
 	c.Assert(err, IsNil)
 
-	decompressed, err := DecompressAndVerify(compressed, checksum)
+	decompressor := compression.Compressors["gzip"]
+	decompressed, err := DecompressAndVerify(compressed, checksum, decompressor)
+	c.Assert(err, IsNil)
+
+	result, err := ioutil.ReadAll(decompressed)
+	c.Assert(err, IsNil)
+
+	c.Assert(result, DeepEquals, data)
+}
+
+func (s *TestSuite) TestLz4Compress(c *C) {
+	var err error
+	data := []byte("Some random string")
+	checksum := GetChecksum(data)
+
+	compressor := compression.Compressors["lz4"]
+	compressed, err := compressor.CompressData(data)
+	c.Assert(err, IsNil)
+
+	decompressor := compression.Compressors["lz4"]
+	decompressed, err := DecompressAndVerify(compressed, checksum, decompressor)
+	c.Assert(err, IsNil)
+
+	result, err := ioutil.ReadAll(decompressed)
+	c.Assert(err, IsNil)
+
+	c.Assert(result, DeepEquals, data)
+}
+
+func (s *TestSuite) TestZstdCompress(c *C) {
+	var err error
+	data := []byte("Some random string")
+	checksum := GetChecksum(data)
+
+	compressor := compression.Compressors["zstd"]
+	compressed, err := compressor.CompressData(data)
+	c.Assert(err, IsNil)
+
+	decompressor := compression.Compressors["zstd"]
+	decompressed, err := DecompressAndVerify(compressed, checksum, decompressor)
 	c.Assert(err, IsNil)
 
 	result, err := ioutil.ReadAll(decompressed)
