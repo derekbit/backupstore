@@ -6,6 +6,9 @@ require (
 	github.com/aws/aws-sdk-go v1.34.2
 	github.com/google/uuid v1.3.0
 	github.com/honestbee/jobq v1.0.2
+	github.com/klauspost/compress v1.14.1
+	github.com/pierrec/lz4/v4 v4.1.12
+	github.com/pierrec/xxHash v0.1.5 // indirect
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.3.0
 	github.com/spf13/afero v1.5.1
