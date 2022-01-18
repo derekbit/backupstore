@@ -11,22 +11,25 @@ import (
 
 	. "github.com/longhorn/backupstore/logging"
 	"github.com/longhorn/backupstore/util"
+	"github.com/longhorn/backupstore/util/compression"
 )
 
 type DeltaBackupConfig struct {
-	BackupName string
-	Volume     *Volume
-	Snapshot   *Snapshot
-	DestURL    string
-	DeltaOps   DeltaBlockBackupOperations
-	Labels     map[string]string
+	BackupName      string
+	Volume          *Volume
+	Snapshot        *Snapshot
+	DestURL         string
+	DeltaOps        DeltaBlockBackupOperations
+	Labels          map[string]string
+	CompressionAlgo string
 }
 
 type DeltaRestoreConfig struct {
-	BackupURL      string
-	DeltaOps       DeltaRestoreOperations
-	LastBackupName string
-	Filename       string
+	BackupURL       string
+	DeltaOps        DeltaRestoreOperations
+	LastBackupName  string
+	Filename        string
+	CompressionAlgo string
 }
 
 type BlockMapping struct {
@@ -111,6 +114,7 @@ func CreateDeltaBlockBackup(config *DeltaBackupConfig) (string, bool, error) {
 	if deltaOps == nil {
 		return "", false, fmt.Errorf("Missing DeltaBlockBackupOperations")
 	}
+	compressionAlgo := config.CompressionAlgo
 
 	bsDriver, err := GetBackupStoreDriver(destURL)
 	if err != nil {
@@ -213,10 +217,11 @@ func CreateDeltaBlockBackup(config *DeltaBackupConfig) (string, bool, error) {
 	}
 
 	deltaBackup := &Backup{
-		Name:         backupName,
-		VolumeName:   volume.Name,
-		SnapshotName: snapshot.Name,
-		Blocks:       []BlockMapping{},
+		Name:            backupName,
+		VolumeName:      volume.Name,
+		SnapshotName:    snapshot.Name,
+		Blocks:          []BlockMapping{},
+		CompressionAlgo: compressionAlgo,
 	}
 
 	// keep lock alive for async go routine.
@@ -251,6 +256,13 @@ func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Back
 	snapshot := config.Snapshot
 	destURL := config.DestURL
 	deltaOps := config.DeltaOps
+	compressionAlgo := config.CompressionAlgo
+
+	compressor, ok := compression.Compressors[compressionAlgo]
+	if !ok {
+		// fall back to gzip compression if not assigned
+		compressor = compression.Compressors["gzip"]
+	}
 
 	var progress int
 	mCounts := len(delta.Mappings)
@@ -281,7 +293,7 @@ func performBackup(config *DeltaBackupConfig, delta *Mappings, deltaBackup *Back
 				continue
 			}
 
-			rs, err := util.CompressData(block)
+			rs, err := compressor.CompressData(block)
 			if err != nil {
 				return progress, "", err
 			}
@@ -396,7 +408,11 @@ func RestoreDeltaBlockBackup(config *DeltaRestoreConfig) error {
 	if deltaOps == nil {
 		return fmt.Errorf("missing DeltaRestoreOperations")
 	}
-
+	compressioAlgo := config.CompressionAlgo
+	decompressor, ok := compression.Compressors[compressioAlgo]
+	if !ok {
+		decompressor = compression.Compressors["gzip"]
+	}
 	bsDriver, err := GetBackupStoreDriver(backupURL)
 	if err != nil {
 		return err
@@ -492,7 +508,7 @@ func RestoreDeltaBlockBackup(config *DeltaRestoreConfig) error {
 		blkCounts := len(backup.Blocks)
 		for i, block := range backup.Blocks {
 			log.Debugf("Restore for %v: block %v, %v/%v", volDevName, block.BlockChecksum, i+1, blkCounts)
-			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, block); err != nil {
+			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, decompressor, block); err != nil {
 				deltaOps.UpdateRestoreStatus(volDevName, progress, err)
 				return
 			}
@@ -506,14 +522,14 @@ func RestoreDeltaBlockBackup(config *DeltaRestoreConfig) error {
 	return nil
 }
 
-func restoreBlockToFile(volumeName string, volDev *os.File, bsDriver BackupStoreDriver, blk BlockMapping) error {
+func restoreBlockToFile(volumeName string, volDev *os.File, bsDriver BackupStoreDriver, decompressor compression.Compressor, blk BlockMapping) error {
 	blkFile := getBlockFilePath(volumeName, blk.BlockChecksum)
 	rc, err := bsDriver.Read(blkFile)
 	if err != nil {
 		return err
 	}
 	defer rc.Close()
-	r, err := util.DecompressAndVerify(rc, blk.BlockChecksum)
+	r, err := util.DecompressAndVerify(rc, blk.BlockChecksum, decompressor)
 	if err != nil {
 		return err
 	}
@@ -537,6 +553,11 @@ func RestoreDeltaBlockBackupIncrementally(config *DeltaRestoreConfig) error {
 	deltaOps := config.DeltaOps
 	if deltaOps == nil {
 		return fmt.Errorf("missing DeltaBlockBackupOperations")
+	}
+	compressioAlgo := config.CompressionAlgo
+	decompressor, ok := compression.Compressors[compressioAlgo]
+	if !ok {
+		decompressor = compression.Compressors["gzip"]
 	}
 	bsDriver, err := GetBackupStoreDriver(backupURL)
 	if err != nil {
@@ -638,7 +659,7 @@ func RestoreDeltaBlockBackupIncrementally(config *DeltaRestoreConfig) error {
 			}
 		}
 
-		if err := performIncrementalRestore(srcVolumeName, volDev, lastBackup, backup, bsDriver, config); err != nil {
+		if err := performIncrementalRestore(srcVolumeName, volDev, lastBackup, backup, bsDriver, decompressor, config); err != nil {
 			deltaOps.UpdateRestoreStatus(volDevName, 0, err)
 			return
 		}
@@ -649,10 +670,15 @@ func RestoreDeltaBlockBackupIncrementally(config *DeltaRestoreConfig) error {
 }
 
 func performIncrementalRestore(srcVolumeName string, volDev *os.File, lastBackup *Backup, backup *Backup,
-	bsDriver BackupStoreDriver, config *DeltaRestoreConfig) error {
+	bsDriver BackupStoreDriver, decompressor compression.Compressor, config *DeltaRestoreConfig) error {
 	var progress int
 	volDevName := config.Filename
 	deltaOps := config.DeltaOps
+	compressioAlgo := config.CompressionAlgo
+	decompressor, ok := compression.Compressors[compressioAlgo]
+	if !ok {
+		decompressor = compression.Compressors["gzip"]
+	}
 
 	emptyBlock := make([]byte, DEFAULT_BLOCK_SIZE)
 	total := len(backup.Blocks) + len(lastBackup.Blocks)
@@ -666,7 +692,7 @@ func performIncrementalRestore(srcVolumeName string, volDev *os.File, lastBackup
 			continue
 		}
 		if l >= len(lastBackup.Blocks) {
-			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, backup.Blocks[b]); err != nil {
+			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, decompressor, backup.Blocks[b]); err != nil {
 				return err
 			}
 			b++
@@ -677,14 +703,14 @@ func performIncrementalRestore(srcVolumeName string, volDev *os.File, lastBackup
 		lB := lastBackup.Blocks[l]
 		if bB.Offset == lB.Offset {
 			if bB.BlockChecksum != lB.BlockChecksum {
-				if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, bB); err != nil {
+				if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, decompressor, bB); err != nil {
 					return err
 				}
 			}
 			b++
 			l++
 		} else if bB.Offset < lB.Offset {
-			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, bB); err != nil {
+			if err := restoreBlockToFile(srcVolumeName, volDev, bsDriver, decompressor, bB); err != nil {
 				return err
 			}
 			b++

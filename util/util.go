@@ -2,19 +2,18 @@ package util
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/longhorn/backupstore/util/compression"
 	"github.com/sirupsen/logrus"
 )
 
@@ -41,24 +40,8 @@ func GetChecksum(data []byte) string {
 	return checksum
 }
 
-func CompressData(data []byte) (io.ReadSeeker, error) {
-	var b bytes.Buffer
-	w := gzip.NewWriter(&b)
-	if _, err := w.Write(data); err != nil {
-		w.Close()
-		return nil, err
-	}
-	w.Close()
-	return bytes.NewReader(b.Bytes()), nil
-}
-
-func DecompressAndVerify(src io.Reader, checksum string) (io.Reader, error) {
-	r, err := gzip.NewReader(src)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	block, err := ioutil.ReadAll(r)
+func DecompressAndVerify(src io.Reader, checksum string, decompressor compression.Compressor) (io.Reader, error) {
+	block, err := decompressor.DecompressData(src)
 	if err != nil {
 		return nil, err
 	}
