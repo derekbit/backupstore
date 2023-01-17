@@ -16,9 +16,13 @@ import (
 	"strings"
 	"time"
 
+	fs "github.com/google/fscrypt/filesystem"
 	"github.com/google/uuid"
 	lz4 "github.com/pierrec/lz4/v4"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+
+	mount "k8s.io/mount-utils"
 )
 
 const (
@@ -27,6 +31,8 @@ const (
 
 var (
 	cmdTimeout = time.Minute // one minute by default
+
+	forceCleanupMountTimeout = 30 * time.Second
 )
 
 // NopCloser wraps an io.Witer as io.WriteCloser
@@ -242,4 +248,45 @@ func IsMounted(mountPoint string) bool {
 		}
 	}
 	return false
+}
+
+func cleanupMount(mountDir string, mounter mount.Interface, log logrus.FieldLogger) error {
+	forceUnmounter, ok := mounter.(mount.MounterForceUnmounter)
+	if ok {
+		log.Infof("Trying to force clean up mountpoint %v", mountDir)
+		return mount.CleanupMountWithForce(mountDir, forceUnmounter, false, forceCleanupMountTimeout)
+	}
+
+	log.Infof("Trying to clean up mountpoint %v", mountDir)
+	return mount.CleanupMountPoint(mountDir, forceUnmounter, false)
+}
+
+func CheckAndCleanupMountPoint(Kind, mountDir string, mounter mount.Interface, log logrus.FieldLogger) (bool, error) {
+	mounted, err := mounter.IsMountPoint(mountDir)
+	if err != nil {
+		if mntErr := cleanupMount(mountDir, mounter, log); mntErr != nil {
+			log.WithError(mntErr).Errorf("Failed to unmount corrupted mountpoint %v", mountDir)
+			return true, errors.Wrapf(err, "Failed to unmount corrupted mountpoint %v", mountDir)
+		}
+	}
+
+	if !mounted {
+		return false, nil
+	}
+
+	mnt, err := fs.GetMount(mountDir)
+	if err != nil {
+		return true, errors.Wrapf(err, "Failed to get mount for %v", mountDir)
+	}
+
+	if strings.Contains(mnt.FilesystemType, Kind) {
+		return true, nil
+	}
+
+	if mntErr := cleanupMount(mountDir, mounter, log); mntErr != nil {
+		log.WithError(mntErr).Errorf("Failed to unmount mountpoint %v (%v) for %v protocol", mnt.FilesystemType, mountDir, Kind)
+		return true, errors.Wrapf(err, "Failed to unmount mountpoint %v (%v) for %v protocol", mnt.FilesystemType, mountDir, Kind)
+	}
+
+	return false, nil
 }

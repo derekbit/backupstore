@@ -3,6 +3,7 @@ package nfs
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -61,17 +62,15 @@ func initFunc(destURL string) (backupstore.BackupStoreDriver, error) {
 		return nil, fmt.Errorf("BUG: Why dispatch %v to %v?", u.Scheme, KIND)
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("NFS path must follow: nfs://server:/path/ format")
+		return nil, fmt.Errorf("NFS path must follow format: nfs://<server-address>:/<share-name>/")
 	}
 	if u.Path == "" {
 		return nil, fmt.Errorf("cannot find nfs path")
 	}
 
 	b.serverPath = u.Host + u.Path
+	b.destURL = KIND + "://" + b.serverPath
 	b.mountDir = filepath.Join(MountDir, strings.TrimRight(strings.Replace(u.Host, ".", "_", -1), ":"), u.Path)
-	if _, err = util.ExecuteWithCustomTimeout("mkdir", []string{"-m", "700", "-p", b.mountDir}, defaultTimeout); err != nil {
-		return nil, errors.Wrapf(err, "cannot create mount directory %v for NFS server", b.mountDir)
-	}
 
 	if err := b.mount(); err != nil {
 		return nil, errors.Wrapf(err, "cannot mount nfs %v", b.serverPath)
@@ -80,19 +79,24 @@ func initFunc(destURL string) (backupstore.BackupStoreDriver, error) {
 		return nil, fmt.Errorf("NFS path %v doesn't exist or is not a directory", b.serverPath)
 	}
 
-	b.destURL = KIND + "://" + b.serverPath
 	log.Infof("Loaded driver for %v", b.destURL)
+
 	return b, nil
 }
 
 func (b *BackupStoreDriver) mount() (err error) {
 	mounter := mount.NewWithoutSystemd("")
 
-	if mounted, err := mounter.IsMountPoint(b.mountDir); err != nil {
+	mounted, err := util.CheckAndCleanupMountPoint(KIND, b.mountDir, mounter, log)
+	if err != nil {
 		return err
-	} else if mounted {
-		log.Debugf("NFS share %v is already mounted on %v", b.destURL, b.mountDir)
+	}
+	if mounted {
 		return nil
+	}
+
+	if err := os.MkdirAll(b.mountDir, 0700); err != nil {
+		return errors.Wrapf(err, "cannot create mount directory %v for NFS server", b.mountDir)
 	}
 
 	retErr := errors.New("Cannot mount using NFSv4")
