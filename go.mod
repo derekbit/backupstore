@@ -56,3 +56,5 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8 // indirect
 )
+
+replace github.com/longhorn/go-common-libs v0.0.0-20241208100509-e1932c65c078 => github.com/derekbit/go-common-libs v0.0.0-20241213135153-57bc1bc8e5bc
